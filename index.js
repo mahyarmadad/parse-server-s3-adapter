@@ -2,7 +2,12 @@
 //
 // Stores Parse files in AWS S3.
 
-const { S3Client, CreateBucketCommand } = require("@aws-sdk/client-s3");
+const {
+  S3Client,
+  CreateBucketCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
+} = require("@aws-sdk/client-s3");
 const optionsFromArguments = require("./lib/optionsFromArguments");
 
 const awsCredentialsDeprecationNotice =
@@ -165,15 +170,11 @@ class S3Adapter {
     return this.createBucket().then(
       () =>
         new Promise((resolve, reject) => {
-          const params = {
+          const command = new DeleteObjectCommand({
+            Bucket: this._bucket,
             Key: this._bucketPrefix + filename,
-          };
-          this._s3Client.deleteObject(params, (err, data) => {
-            if (err !== null) {
-              return reject(err);
-            }
-            return resolve(data);
           });
+          this._s3Client.send(command).then(resolve).catch(reject);
         })
     );
   }
