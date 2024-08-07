@@ -124,8 +124,9 @@ class S3Adapter {
 
   // For a given config object, filename, and data, store a file in S3
   // Returns a promise containing the S3 object creation response
-  createFile(filename, data, contentType, options = {}) {
+  async createFile(filename, data, contentType, options = {}) {
     const params = {
+      Bucket: this._bucket,
       Key: this._bucketPrefix + filename,
       Body: data,
     };
