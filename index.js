@@ -8,9 +8,9 @@ const {
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
-  HeadObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const deasync = require("deasync");
 
 const optionsFromArguments = require("./lib/optionsFromArguments");
 
@@ -159,74 +159,95 @@ class S3Adapter {
       const serializedTags = serialize(options.tags);
       params.Tagging = serializedTags;
     }
-    try {
-      await this.createBucket();
-      const command = new PutObjectCommand(params);
-      const res = await this._s3Client.send(command);
-      return res;
-    } catch (error) {
-      throw new Error(error.message);
-    }
+    await this.createBucket();
+    const command = new PutObjectCommand(params);
+    const response = await this._s3Client.send(command);
+    return response;
   }
 
-  deleteFile(filename) {
-    return this.createBucket().then(
-      () =>
-        new Promise((resolve, reject) => {
-          const command = new DeleteObjectCommand({
-            Bucket: this._bucket,
-            Key: this._bucketPrefix + filename,
-          });
-          this._s3Client.send(command).then(resolve).catch(reject);
-        })
-    );
+  async deleteFile(filename) {
+    const params = {
+      Bucket: this._bucket,
+      Key: this._bucketPrefix + filename,
+    };
+    await this.createBucket();
+    const command = new DeleteObjectCommand(params);
+    const response = await this._s3Client.send(command);
+    return response;
   }
 
   // Search for and return a file if found by filename
   // Returns a promise that succeeds with the buffer result from S3
   async getFileData(filename) {
-    try {
-      await this.createBucket();
-      const command = new GetObjectCommand({
-        Bucket: this._bucket,
-        Key: this._bucketPrefix + filename,
+    const params = {
+      Bucket: this._bucket,
+      Key: this._bucketPrefix + filename,
+    };
+    await this.createBucket();
+    const command = new GetObjectCommand(params);
+    const response = this._s3Client.send(command);
+    if (response && !response.Body) throw new Error(response);
+    return response.Body;
+  }
+
+  // Exposed only for testing purposes
+  getSignedUrlSync(client, command, options) {
+    let isDone = false;
+    let signedUrl = "";
+    let error = null;
+
+    getSignedUrl(client, command, options)
+      .then((url) => {
+        signedUrl = url;
+        isDone = true;
+      })
+      .catch((err) => {
+        error = err;
+        isDone = true;
       });
-      const res = await this._s3Client.send(command);
-      return res.Body;
-    } catch (error) {
-      throw new Error(error.message);
+
+    // Block the event loop until the promise resolves
+    while (!isDone) {
+      deasync.sleep(100); // Sleep for 100 milliseconds
     }
+
+    if (error) {
+      throw error;
+    }
+
+    return signedUrl;
   }
 
   // Generates and returns the location of a file stored in S3 for the given request and filename
   // The location is the direct S3 link if the option is set,
   // otherwise we serve the file through parse-server
-  async getFileLocation(config, filename) {
+  getFileLocation(config, filename) {
     const fileName = filename.split("/").map(encodeURIComponent).join("/");
-    if (!this._directAccess)
+    if (!this._directAccess) {
       return `${config.mount}/files/${config.applicationId}/${fileName}`;
+    }
+
     const fileKey = `${this._bucketPrefix}${fileName}`;
+
     let presignedUrl = "";
     if (this._presignedUrl) {
-      try {
-        const params = {
-          Bucket: this._bucket,
-          Key: fileKey,
-        };
-        const headCommand = new HeadObjectCommand(params);
-        await this._s3Client.send(headCommand);
-        const command = new GetObjectCommand(params);
-        presignedUrl = await getSignedUrl(this._s3Client, command, {
-          expiresIn: this._presignedUrlExpires,
-        });
-        if (!this._baseUrl) return presignedUrl;
-      } catch (error) {
-        throw new Error(error.message);
+      const params = { Bucket: this._bucket, Key: fileKey };
+      const options = this._presignedUrlExpires
+        ? { expiresIn: this._presignedUrlExpires }
+        : {};
+
+      const command = new GetObjectCommand(params);
+      presignedUrl = this.getSignedUrlSync(this._s3Client, command, options);
+
+      if (!this._baseUrl) {
+        return presignedUrl;
       }
     }
 
-    if (!this._baseUrl)
+    if (!this._baseUrl) {
       return `https://${this._bucket}.s3.amazonaws.com/${fileKey}`;
+    }
+
     const baseUrlFileKey = this._baseUrlDirect ? fileName : fileKey;
     return buildDirectAccessUrl(
       this._baseUrl,
@@ -244,23 +265,20 @@ class S3Adapter {
       Range: req.get("Range"),
     };
 
-    try {
-      await this.createBucket();
-      const data = await this._s3Client.send(new GetObjectCommand(params));
-      if (!res.Body) throw new Error("No body found");
-      res.writeHead(206, {
-        "Accept-Ranges": data.AcceptRanges,
-        "Content-Length": data.ContentLength,
-        "Content-Range": data.ContentRange,
-        "Content-Type": data.ContentType,
-      });
+    await this.createBucket();
+    const command = new GetObjectCommand(params);
+    const data = await this._s3Client.send(command);
+    if (data && !data.Body) throw new Error(data);
 
-      res.write(data.Body);
-      res.end();
-      return data.Body.transformToWebStream();
-    } catch (error) {
-      throw new Error(error.message);
-    }
+    res.writeHead(206, {
+      "Accept-Ranges": data.AcceptRanges,
+      "Content-Length": data.ContentLength,
+      "Content-Range": data.ContentRange,
+      "Content-Type": data.ContentType,
+    });
+    res.write(data.Body);
+    res.end();
+    return data.Body.transformToWebStream();
   }
 }
 
