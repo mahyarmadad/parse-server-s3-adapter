@@ -216,7 +216,7 @@ class S3Adapter {
         Bucket: this._bucket,
         Key: fileKey,
       });
-      const presignedUrl = await getSignedUrl(client, command, {
+      const presignedUrl = await getSignedUrl(this._s3Client, command, {
         expiresIn: this._presignedUrlExpires,
       });
       if (!this._baseUrl) {
@@ -238,33 +238,31 @@ class S3Adapter {
     );
   }
 
-  handleFileStream(filename, req, res) {
+  async handleFileStream(filename, req, res) {
     const params = {
+      Bucket: this._bucket,
       Key: this._bucketPrefix + filename,
       Range: req.get("Range"),
     };
-    return this.createBucket().then(
-      () =>
-        new Promise((resolve, reject) => {
-          this._s3Client.getObject(params, (error, data) => {
-            if (error !== null) {
-              return reject(error);
-            }
-            if (data && !data.Body) {
-              return reject(data);
-            }
-            res.writeHead(206, {
-              "Accept-Ranges": data.AcceptRanges,
-              "Content-Length": data.ContentLength,
-              "Content-Range": data.ContentRange,
-              "Content-Type": data.ContentType,
-            });
-            res.write(data.Body);
-            res.end();
-            return resolve(data.Body);
-          });
-        })
-    );
+
+    try {
+      await this.createBucket();
+      const res = await this._s3Client.send(new GetObjectCommand(params));
+      if (!res.Body) throw new Error("No body found");
+
+      res.writeHead(206, {
+        "Accept-Ranges": data.AcceptRanges,
+        "Content-Length": data.ContentLength,
+        "Content-Range": data.ContentRange,
+        "Content-Type": data.ContentType,
+      });
+
+      res.write(data.Body);
+      res.end();
+      return data.Body.transformToWebStream();
+    } catch (error) {
+      throw new Error(error.message);
+    }
   }
 }
 
