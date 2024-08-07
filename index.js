@@ -7,7 +7,10 @@ const {
   CreateBucketCommand,
   PutObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
 } = require("@aws-sdk/client-s3");
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
 const optionsFromArguments = require("./lib/optionsFromArguments");
 
 const awsCredentialsDeprecationNotice =
@@ -182,20 +185,18 @@ class S3Adapter {
   // Search for and return a file if found by filename
   // Returns a promise that succeeds with the buffer result from S3
   getFileData(filename) {
-    const params = { Key: this._bucketPrefix + filename };
+    const params = {};
     return this.createBucket().then(
       () =>
-        new Promise((resolve, reject) => {
-          this._s3Client.getObject(params, (err, data) => {
-            if (err !== null) {
-              return reject(err);
-            }
-            // Something happened here...
-            if (data && !data.Body) {
-              return reject(data);
-            }
-            return resolve(data.Body);
+        new Promise(async (resolve, reject) => {
+          const command = new GetObjectCommand({
+            Bucket: this._bucket,
+            Key: this._bucketPrefix + filename,
           });
+          this._s3Client
+            .send(command)
+            .then((res) => resolve(res?.Body))
+            .catch(reject);
         })
     );
   }
@@ -203,23 +204,21 @@ class S3Adapter {
   // Generates and returns the location of a file stored in S3 for the given request and filename
   // The location is the direct S3 link if the option is set,
   // otherwise we serve the file through parse-server
-  getFileLocation(config, filename) {
+  async getFileLocation(config, filename) {
     const fileName = filename.split("/").map(encodeURIComponent).join("/");
     if (!this._directAccess) {
       return `${config.mount}/files/${config.applicationId}/${fileName}`;
     }
-
     const fileKey = `${this._bucketPrefix}${fileName}`;
-
     let presignedUrl = "";
     if (this._presignedUrl) {
-      const params = { Bucket: this._bucket, Key: fileKey };
-      if (this._presignedUrlExpires) {
-        params.Expires = this._presignedUrlExpires;
-      }
-      // Always use the "getObject" operation, and we recommend that you protect the URL
-      // appropriately: https://docs.aws.amazon.com/AmazonS3/latest/dev/ShareObjectPreSignedURL.html
-      presignedUrl = this._s3Client.getSignedUrl("getObject", params);
+      const command = new GetObjectCommand({
+        Bucket: this._bucket,
+        Key: fileKey,
+      });
+      const presignedUrl = await getSignedUrl(client, command, {
+        expiresIn: this._presignedUrlExpires,
+      });
       if (!this._baseUrl) {
         return presignedUrl;
       }
